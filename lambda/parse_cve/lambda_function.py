@@ -2,6 +2,7 @@ import boto3
 import csv
 import io
 import os
+import json
 import logging
 
 # Setup logging
@@ -16,9 +17,25 @@ def lambda_handler(event, context):
     logger.info("=== START fetchCVELambda ===")
     
     try:
-        # Lấy OS versions từ event
-        os_versions = event['os_versions']
+        # Parse os_versions from event
+        if 'os_versions' in event:
+            os_versions = event['os_versions']
+        elif 'body' in event:
+            # Nếu event đến trực tiếp từ fetchosinfo output
+            body = event.get('body', '[]')
+            results = json.loads(body)
+            os_versions = [ r.get('NormalizedOS') for r in results if r.get('NormalizedOS') ]
+        else:
+            os_versions = []
+        
         logger.info(f"OS versions to filter: {os_versions}")
+
+        if not os_versions:
+            logger.warning("No os_versions provided or parsed.")
+            return {
+                'statusCode': 400,
+                'message': 'No os_versions provided'
+            }
 
         # Thông tin S3 file
         bucket = os.environ['BUCKET_NAME']
@@ -69,7 +86,8 @@ def lambda_handler(event, context):
 
         return {
             'statusCode': 200,
-            'saved': saved
+            'saved': saved,
+            'os_versions': os_versions
         }
     
     except Exception as e:
