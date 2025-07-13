@@ -1,10 +1,13 @@
 {
-  "Comment": "Sequential KB install per server with parallel servers",
+  "Comment": "Patch KBs for multiple servers in parallel, KBs per server in sequence",
   "StartAt": "GetTargetsAndKBs",
   "States": {
     "GetTargetsAndKBs": {
       "Type": "Task",
-      "Resource": "arn:aws:lambda:us-east-1:982035845258:function:getTargetInstancesAndKBsLambda",
+      "Resource": "arn:aws:lambda:us-east-1:982035845258:function:getTargetInstancesAndKBsLambda_1",
+      "Parameters": {
+        "instance_ids.$": "$.instance_ids"
+      },
       "Next": "PatchPerServer"
     },
     "PatchPerServer": {
@@ -14,6 +17,7 @@
         "InstanceId.$": "$$.Map.Item.Value.InstanceId",
         "KBs.$": "$$.Map.Item.Value.KBs"
       },
+      "MaxConcurrency": 5,
       "Iterator": {
         "StartAt": "PatchSequentialKBs",
         "States": {

@@ -18,10 +18,10 @@ Install-WindowsUpdate -KBArticleID $kb -AcceptAll -AutoReboot
 $pendingReboot = (Get-ItemProperty "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Component Based Servicing\\RebootPending" -ErrorAction SilentlyContinue) -ne $null
 
 # Output structured JSON
-$result = @{
+$result = @{{ 
     KB = $kb
     RebootRequired = $pendingReboot
-}
+}}
 $result | ConvertTo-Json
 """
 

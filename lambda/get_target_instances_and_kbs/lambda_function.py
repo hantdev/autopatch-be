@@ -16,69 +16,56 @@ table = dynamodb.Table(DDB_TABLE_NAME)
 
 def lambda_handler(event, context):
     logger.info("Started getTargetInstancesAndKBsLambda with event: %s", json.dumps(event))
-    
-    os_versions = event.get('os_versions')
-    if not os_versions:
-        return {"status": "No os_versions provided"}
+
+    instance_ids = event.get('instance_ids', [])
+    if not instance_ids or not isinstance(instance_ids, list):
+        return {
+            "status": "Failed",
+            "message": "Missing or invalid 'instance_ids' input"
+        }
 
     results = []
 
-    for os_name_raw in os_versions:
-        os_name = f"OS#{os_name_raw}" if not os_name_raw.startswith("OS#") else os_name_raw
-
-        # Fetch KBs from DynamoDB
-        kb_list = get_kbs_from_dynamodb(os_name)
-        kb_list = list(set(kb_list))
-
-        if not kb_list:
-            logger.warning(f"No KBs found for {os_name}")
+    for instance_id in instance_ids:
+        os_name = get_os_from_instance(instance_id)
+        if not os_name:
+            logger.warning(f"Could not determine OS for instance {instance_id}")
             continue
 
-        # Find EC2 instances
-        instances = get_target_instances(os_name)
+        os_key = f"OS#{os_name}"
+        kb_list = get_kbs_from_dynamodb(os_key)
+        kb_list = list(set(kb_list))  # Remove duplicates
 
-        if not instances:
-            logger.warning(f"No instances found for {os_name}")
-            continue
-
-        for instance_id in instances:
-            results.append({
-                "InstanceId": instance_id,
-                "OS": os_name.replace("OS#",""),
-                "KBs": kb_list
-            })
+        results.append({
+            "InstanceId": instance_id,
+            "OS": os_name,
+            "KBs": kb_list
+        })
 
     return {
         "status": "Success",
         "results": results
     }
 
-def get_kbs_from_dynamodb(os_name):
+def get_os_from_instance(instance_id):
     try:
-        response = table.query(
-            KeyConditionExpression=Key('PK').eq(os_name)
-        )
-        items = response.get('Items', [])
-        return [item['kb'] for item in items if 'kb' in item]
-    except ClientError as e:
-        logger.error(f"DynamoDB query error: {e}")
-        return []
-
-def get_target_instances(os_name):
-    try:
-        os_name_clean = os_name.replace("OS#", "").strip()
-        response = ec2.describe_instances(
-            Filters=[
-                {'Name': 'instance-state-name', 'Values': ['running']}
-            ]
-        )
-        instance_ids = []
+        response = ec2.describe_instances(InstanceIds=[instance_id])
         for res in response['Reservations']:
             for inst in res['Instances']:
                 os_tag = next((tag['Value'] for tag in inst.get('Tags', []) if tag['Key'] == 'OS'), None)
-                if os_tag == os_name_clean:
-                    instance_ids.append(inst['InstanceId'])
-        return instance_ids
+                return os_tag
+        return None
     except ClientError as e:
         logger.error(f"EC2 describe_instances error: {e}")
+        return None
+
+def get_kbs_from_dynamodb(os_key):
+    try:
+        response = table.query(
+            KeyConditionExpression=Key('PK').eq(os_key)
+        )
+        items = response.get('Items', [])
+        return [item['kbArticle'] for item in items if 'kbArticle' in item]
+    except ClientError as e:
+        logger.error(f"DynamoDB query error: {e}")
         return []

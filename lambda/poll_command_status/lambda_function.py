@@ -19,22 +19,10 @@ def lambda_handler(event, context):
         status = response.get('Status')
         output = response.get('StandardOutputContent', '').strip()
 
-        # Try parse structured JSON output
-        reboot_required = None
-        kb_installed = None
-        try:
-            parsed = json.loads(output)
-            reboot_required = parsed.get('RebootRequired')
-            kb_installed = parsed.get('KB')
-        except json.JSONDecodeError:
-            pass  # If not JSON, keep reboot_required as None
-
         return {
             'CommandId': command_id,
             'InstanceId': instance_id,
             'Status': status,
-            'RebootRequired': reboot_required,
-            'KB': kb_installed,
             'Output': output[:500]  # Truncate for logging/storage
         }
 
