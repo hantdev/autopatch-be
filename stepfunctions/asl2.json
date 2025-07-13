@@ -1,0 +1,84 @@
+{
+  "Comment": "Sequential KB install per server with parallel servers",
+  "StartAt": "GetTargetsAndKBs",
+  "States": {
+    "GetTargetsAndKBs": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:982035845258:function:getTargetInstancesAndKBsLambda",
+      "Next": "PatchPerServer"
+    },
+    "PatchPerServer": {
+      "Type": "Map",
+      "ItemsPath": "$.results",
+      "ItemSelector": {
+        "InstanceId.$": "$$.Map.Item.Value.InstanceId",
+        "KBs.$": "$$.Map.Item.Value.KBs"
+      },
+      "Iterator": {
+        "StartAt": "PatchSequentialKBs",
+        "States": {
+          "PatchSequentialKBs": {
+            "Type": "Map",
+            "ItemsPath": "$.KBs",
+            "MaxConcurrency": 1,
+            "ItemSelector": {
+              "InstanceId.$": "$.InstanceId",
+              "KB.$": "$$.Map.Item.Value"
+            },
+            "Iterator": {
+              "StartAt": "RunPatch",
+              "States": {
+                "RunPatch": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:lambda:us-east-1:982035845258:function:runPatchLambda",
+                  "Next": "PollPatchStatus"
+                },
+                "PollPatchStatus": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:lambda:us-east-1:982035845258:function:pollCommandStatusLambda",
+                  "Next": "CheckPatchStatus"
+                },
+                "CheckPatchStatus": {
+                  "Type": "Choice",
+                  "Choices": [
+                    {
+                      "Variable": "$.Status",
+                      "StringEquals": "InProgress",
+                      "Next": "Wait60s"
+                    },
+                    {
+                      "Variable": "$.Status",
+                      "StringEquals": "Success",
+                      "Next": "Done"
+                    },
+                    {
+                      "Variable": "$.Status",
+                      "StringEquals": "Failed",
+                      "Next": "FailState"
+                    }
+                  ],
+                  "Default": "FailState"
+                },
+                "Wait60s": {
+                  "Type": "Wait",
+                  "Seconds": 60,
+                  "Next": "PollPatchStatus"
+                },
+                "Done": {
+                  "Type": "Pass",
+                  "End": true
+                },
+                "FailState": {
+                  "Type": "Fail",
+                  "Cause": "Patch failed or unknown status"
+                }
+              }
+            },
+            "End": true
+          }
+        }
+      },
+      "End": true
+    }
+  }
+}

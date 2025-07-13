@@ -1,98 +1,41 @@
 import boto3
-import csv
-import io
 import os
 import json
-import logging
+from boto3.dynamodb.conditions import Key, Attr
 
-# Setup logging
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
-
-s3 = boto3.client('s3')
 dynamodb = boto3.resource('dynamodb')
 table = dynamodb.Table(os.environ['TABLE_NAME'])
 
 def lambda_handler(event, context):
-    logger.info("=== START fetchCVELambda ===")
-    
-    try:
-        # Parse os_versions from event
-        if 'os_versions' in event:
-            os_versions = event['os_versions']
-        elif 'body' in event:
-            # Nếu event đến trực tiếp từ fetchosinfo output
-            body = event.get('body', '[]')
-            results = json.loads(body)
-            os_versions = [ r.get('NormalizedOS') for r in results if r.get('NormalizedOS') ]
-        else:
-            os_versions = []
+    os_versions = event.get("os_versions", [])
+    if not os_versions:
+        return {
+            "statusCode": 400,
+            "body": json.dumps({"error": "Missing os_versions in input"})
+        }
+
+    results = []
+
+    for os_version in os_versions:
+        pk_value = f"OS#{os_version.split(' (')[0]}"  # Loại bỏ phần '(Server Core installation)'
+        response = table.query(
+            KeyConditionExpression=Key('PK').eq(pk_value)
+        )
         
-        logger.info(f"OS versions to filter: {os_versions}")
-
-        if not os_versions:
-            logger.warning("No os_versions provided or parsed.")
-            return {
-                'statusCode': 400,
-                'message': 'No os_versions provided'
+        for item in response.get('Items', []):
+            result_item = {
+                "PK": item.get("PK", ""),
+                "SK": item.get("SK", ""),
+                "baseScore": item.get("baseScore", ""),
+                "cveNumber": item.get("cveNumber", ""),
+                "severity": item.get("severity", ""),
+                "impact": item.get("impact", ""),
+                "kbArticle": item.get("kbArticle", ""),
+                "releaseDate": item.get("releaseDate", "")
             }
+            results.append(result_item)
 
-        # Thông tin S3 file
-        bucket = os.environ['BUCKET_NAME']
-        key = os.environ['CSV_KEY']
-        logger.info(f"Reading CSV from s3://{bucket}/{key}")
-
-        # Tải file CSV từ S3
-        obj = s3.get_object(Bucket=bucket, Key=key)
-        csv_content = obj['Body'].read().decode('utf-8')
-
-        reader = csv.DictReader(io.StringIO(csv_content))
-        saved = []
-        total_rows = 0
-
-        # Duyệt từng row trong CSV
-        for row in reader:
-            total_rows += 1
-
-            product = row.get('Product', '')
-            cve_id = row.get('Details', '')
-            kb = row.get('Article', '')
-            severity = row.get('Max Severity', '')
-            description = row.get('Impact', '')
-            published_date = row.get('Release date', '')
-
-            logger.debug(f"Row {total_rows}: product={product}, cve_id={cve_id}, kb={kb}")
-
-            if product in os_versions and kb:
-                pk = f"OS#{product}"
-                sk = f"CVE#{cve_id}"
-
-                item = {
-                    'PK': pk,
-                    'SK': sk,
-                    'kb': kb,
-                    'severity': severity,
-                    'description': description,
-                    'publishedDate': published_date
-                }
-
-                table.put_item(Item=item)
-                saved.append(f"{cve_id} ({product})")
-                logger.info(f"Saved to DynamoDB: {pk} | {sk}")
-
-        logger.info(f"Total rows parsed: {total_rows}")
-        logger.info(f"Total items saved: {len(saved)}")
-        logger.info("=== END fetchCVELambda ===")
-
-        return {
-            'statusCode': 200,
-            'saved': saved,
-            'os_versions': os_versions
-        }
-    
-    except Exception as e:
-        logger.error(f"ERROR in fetchCVELambda: {str(e)}", exc_info=True)
-        return {
-            'statusCode': 500,
-            'error': str(e)
-        }
+    return {
+        "statusCode": 200,
+        "body": json.dumps(results)
+    }
