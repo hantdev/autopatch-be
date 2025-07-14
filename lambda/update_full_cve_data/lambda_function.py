@@ -15,10 +15,10 @@ dynamodb = boto3.resource('dynamodb')
 table = dynamodb.Table(os.environ['TABLE_NAME'])
 
 def get_monthly_periods():
-    """Tạo danh sách các tháng từ 2020-01 đến 2025-05"""
+    """Tạo danh sách các tháng từ 2025-01 đến 2025-06"""
     periods = []
-    start_date = datetime(2020, 1, 1)
-    end_date = datetime(2025, 5, 31, 23, 59, 59)
+    start_date = datetime(2025, 1, 1)
+    end_date = datetime(2025, 6, 30, 23, 59, 59)
     
     current_date = start_date
     while current_date <= end_date:
@@ -31,7 +31,7 @@ def get_monthly_periods():
         period_end = next_month - timedelta(days=1)
         period_end = period_end.replace(hour=23, minute=59, second=59)
         
-        # Đảm bảo không vượt quá tháng 5/2025
+        # Đảm bảo không vượt quá tháng 6/2025
         if period_end > end_date:
             period_end = end_date
         
@@ -111,6 +111,23 @@ def process_cve_data(cve_data):
     """Xử lý và chuẩn bị dữ liệu cho DynamoDB"""
     processed_items = {}
     processed_count = 0
+    filtered_product_count = 0
+    filtered_severity_count = 0
+    
+    # Define target Windows Server products
+    target_products = [
+        "Windows Server 2016 (Server Core installation)",
+        "Windows Server 2019 (Server Core installation)", 
+        "Windows Server 2022 (Server Core installation)",
+        "Windows Server 2025 (Server Core installation)"
+    ]
+    
+    # Define target severity levels
+    target_severities = ["Critical", "Important"]
+    
+    logger.info(f"Processing {len(cve_data)} CVE records with filters:")
+    logger.info(f"Target products: {target_products}")
+    logger.info(f"Target severities: {target_severities}")
     
     for item in cve_data:
         try:
@@ -135,6 +152,18 @@ def process_cve_data(cve_data):
             
             if not cve_number or not product:
                 logger.warning(f"Skipping item with missing CVE number or product: {item}")
+                continue
+            
+            # Filter for target products
+            if product not in target_products:
+                filtered_product_count += 1
+                logger.debug(f"Skipping non-target product: {product}")
+                continue
+            
+            # Filter for target severity levels
+            if severity not in target_severities:
+                filtered_severity_count += 1
+                logger.debug(f"Skipping non-target severity: {severity}")
                 continue
                 
             # Create DynamoDB item
@@ -185,6 +214,8 @@ def process_cve_data(cve_data):
             logger.error(f"Error processing item {item}: {e}")
             continue
     
+    logger.info(f"Filtering summary: {len(cve_data)} total records, {filtered_product_count} filtered by product, {filtered_severity_count} filtered by severity, {processed_count} processed")
+    
     return list(processed_items.values())
 
 def save_to_dynamodb(items):
@@ -224,8 +255,10 @@ def save_to_dynamodb(items):
     return saved_count, error_count
 
 def lambda_handler(event, context):
-    """Main Lambda handler for monthly CVE data update"""
+    """Main Lambda handler for CVE data update (2025-01 to 2025-06, Windows Server Core only, Critical/Important severity)"""
     logger.info("=== START update_full_cve_data Lambda ===")
+    logger.info("Filtering for Windows Server Core installations (2016, 2019, 2022, 2025) with Critical/Important severity")
+    logger.info("Time range: 2025-01 to 2025-06 (ALL MONTHS)")
     
     try:
         # Get the month to process from event or use current month
@@ -242,9 +275,9 @@ def lambda_handler(event, context):
             all_periods = get_monthly_periods()
             logger.info(f"Total periods available: {len(all_periods)}")
             
-            # Process only the first period to avoid timeout
-            periods = [all_periods[0]] if all_periods else []
-            logger.info(f"Processing first period: {periods[0][0].strftime('%Y-%m')} to {periods[0][1].strftime('%Y-%m')}")
+            # Process all periods (all 6 months from 1/2025 to 6/2025)
+            periods = all_periods
+            logger.info(f"Processing all {len(periods)} periods from 1/2025 to 6/2025")
         
         total_fetched = 0
         total_processed = 0
@@ -254,8 +287,8 @@ def lambda_handler(event, context):
         for i, (start_date, end_date) in enumerate(periods):
             logger.info(f"Processing period {i+1}/{len(periods)}: {start_date.strftime('%Y-%m')} to {end_date.strftime('%Y-%m')}")
             
-            # Fetch CVE data for this month (reduced to 500 records to avoid timeout)
-            cve_data = fetch_cve_data_for_month(start_date, end_date, max_records=500)
+            # Fetch CVE data for this month (increased to 1000 records for better coverage)
+            cve_data = fetch_cve_data_for_month(start_date, end_date, max_records=1000)
             
             if not cve_data:
                 logger.info(f"No data found for period {start_date.strftime('%Y-%m')} to {end_date.strftime('%Y-%m')}")
@@ -283,44 +316,31 @@ def lambda_handler(event, context):
                     logger.warning(f"Running out of time. Remaining: {remaining_time}ms. Stopping processing.")
                     break
         
-        # Calculate next period for continuation
+        # Calculate completion status
         all_periods = get_monthly_periods()
-        current_period_index = 0
+        completed_periods = len(periods)  # All periods were processed
         
-        if periods and len(periods) > 0:
-            current_period = periods[0]
-            for i, period in enumerate(all_periods):
-                if period[0] == current_period[0] and period[1] == current_period[1]:
-                    current_period_index = i
-                    break
+        logger.info(f"Final summary - Total fetched: {total_fetched}, Total processed (filtered): {total_processed}, Total saved: {total_saved}, Total errors: {total_errors}")
+        logger.info(f"All {completed_periods} periods from 1/2025 to 6/2025 have been processed")
         
-        next_period = None
-        if current_period_index + 1 < len(all_periods):
-            next_period = all_periods[current_period_index + 1]
-        
-        logger.info(f"Final summary - Total fetched: {total_fetched}, Total processed: {total_processed}, Total saved: {total_saved}, Total errors: {total_errors}")
-        
-        # Return summary with next period info
+        # Return summary with completion info
         return {
             'statusCode': 200,
             'body': json.dumps({
-                'message': 'Monthly CVE data update completed',
+                'message': 'All CVE data update completed for 1/2025 to 6/2025',
                 'summary': {
                     'totalFetched': total_fetched,
                     'totalProcessed': total_processed,
                     'savedToDynamoDB': total_saved,
                     'errors': total_errors,
                     'periodsProcessed': len(periods),
-                    'currentPeriod': {
-                        'start': periods[0][0].isoformat() if periods else None,
-                        'end': periods[0][1].isoformat() if periods else None
-                    },
-                    'nextPeriod': {
-                        'start': next_period[0].isoformat() if next_period else None,
-                        'end': next_period[1].isoformat() if next_period else None
-                    },
                     'totalPeriods': len(all_periods),
-                    'completedPeriods': current_period_index + 1 if periods else 0
+                    'completedPeriods': completed_periods,
+                    'timeRange': {
+                        'start': '2025-01-01T00:00:00',
+                        'end': '2025-06-30T23:59:59'
+                    },
+                    'status': 'COMPLETED' if completed_periods == len(all_periods) else 'PARTIAL'
                 }
             })
         }

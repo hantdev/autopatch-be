@@ -86,7 +86,25 @@ def fetch_cve_data(start_date, end_date):
 
 def process_cve_data(cve_data):
     """Xử lý và chuẩn bị dữ liệu cho DynamoDB"""
-    processed_items = []
+    processed_items = {}
+    processed_count = 0
+    filtered_product_count = 0
+    filtered_severity_count = 0
+    
+    # Define target Windows Server products
+    target_products = [
+        "Windows Server 2016 (Server Core installation)",
+        "Windows Server 2019 (Server Core installation)", 
+        "Windows Server 2022 (Server Core installation)",
+        "Windows Server 2025 (Server Core installation)"
+    ]
+    
+    # Define target severity levels
+    target_severities = ["Critical", "Important"]
+    
+    logger.info(f"Processing {len(cve_data)} CVE records with filters:")
+    logger.info(f"Target products: {target_products}")
+    logger.info(f"Target severities: {target_severities}")
     
     for item in cve_data:
         try:
@@ -109,10 +127,25 @@ def process_cve_data(cve_data):
             if not cve_number or not product:
                 logger.warning(f"Skipping item with missing CVE number or product: {item}")
                 continue
+            
+            # Filter for target products
+            if product not in target_products:
+                filtered_product_count += 1
+                logger.debug(f"Skipping non-target product: {product}")
+                continue
+            
+            # Filter for target severity levels
+            if severity not in target_severities:
+                filtered_severity_count += 1
+                logger.debug(f"Skipping non-target severity: {severity}")
+                continue
                 
             # Create DynamoDB item
             pk = f"OS#{product}"
             sk = f"CVE#{cve_number}"
+            
+            # Use composite key to avoid duplicates
+            unique_key = f"{pk}#{sk}"
             
             # Parse release date
             try:
@@ -143,13 +176,17 @@ def process_cve_data(cve_data):
                 'lastUpdated': datetime.now().isoformat() + 'Z'
             }
             
-            processed_items.append(db_item)
+            # Use unique key to avoid duplicates
+            processed_items[unique_key] = db_item
+            processed_count += 1
             
         except Exception as e:
             logger.error(f"Error processing item {item}: {e}")
             continue
     
-    return processed_items
+    logger.info(f"Filtering summary: {len(cve_data)} total records, {filtered_product_count} filtered by product, {filtered_severity_count} filtered by severity, {processed_count} processed")
+    
+    return list(processed_items.values())
 
 def save_to_dynamodb(items):
     """Lưu dữ liệu vào DynamoDB"""
@@ -175,8 +212,10 @@ def save_to_dynamodb(items):
     return saved_count, error_count
 
 def lambda_handler(event, context):
-    """Main Lambda handler"""
+    """Main Lambda handler for previous month CVE data update (Windows Server Core only, Critical/Important severity)"""
     logger.info("=== START update_cve_data Lambda ===")
+    logger.info("Filtering for Windows Server Core installations (2016, 2019, 2022, 2025) with Critical/Important severity")
+    logger.info("Processing previous month data")
     
     try:
         # Get date range for last month
@@ -205,7 +244,7 @@ def lambda_handler(event, context):
         # Process data for DynamoDB
         processed_items = process_cve_data(cve_data)
         
-        logger.info(f"Processed {len(processed_items)} items for DynamoDB")
+        logger.info(f"Processed {len(processed_items)} items for DynamoDB (after filtering)")
         
         # Save to DynamoDB
         saved_count, error_count = save_to_dynamodb(processed_items)
@@ -216,7 +255,7 @@ def lambda_handler(event, context):
         return {
             'statusCode': 200,
             'body': json.dumps({
-                'message': 'CVE data updated successfully',
+                'message': 'Previous month CVE data updated successfully (filtered for Windows Server Core)',
                 'period': {
                     'start': start_date.isoformat(),
                     'end': end_date.isoformat()
@@ -225,7 +264,11 @@ def lambda_handler(event, context):
                     'totalFetched': len(cve_data),
                     'totalProcessed': len(processed_items),
                     'savedToDynamoDB': saved_count,
-                    'errors': error_count
+                    'errors': error_count,
+                    'filters': {
+                        'products': ['Windows Server 2016/2019/2022/2025 (Server Core installation)'],
+                        'severities': ['Critical', 'Important']
+                    }
                 }
             })
         }
