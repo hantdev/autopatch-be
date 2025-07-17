@@ -1,0 +1,241 @@
+{
+  "Comment": "Patch KBs without reboot handling",
+  "StartAt": "GetTargetsAndKBs",
+  "States": {
+    "GetTargetsAndKBs": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:<region>:<account-id>:function:getTargetInstancesAndKBsLambda_1",
+      "Parameters": {
+        "instance_ids.$": "$.instance_ids"
+      },
+      "Next": "PollGetKBResultWait"
+    },
+    "PollGetKBResultWait": {
+      "Type": "Wait",
+      "Seconds": 120,
+      "Next": "PollGetKBResult"
+    },
+    "PollGetKBResult": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:<region>:<account-id>:function:pollGetKBCommandResult",
+      "Next": "PatchPerServer"
+    },
+    "PatchPerServer": {
+      "Type": "Map",
+      "ItemsPath": "$.results",
+      "ItemSelector": {
+        "InstanceId.$": "$$.Map.Item.Value.InstanceId",
+        "availableKBs.$": "$$.Map.Item.Value.availableKBs",
+        "installedKBs.$": "$$.Map.Item.Value.installedKBs",
+        "skippedKBs.$": "$$.Map.Item.Value.skippedKBs"
+      },
+      "MaxConcurrency": 1,
+      "Iterator": {
+        "StartAt": "MarkSkippedKBs",
+        "States": {
+          "MarkSkippedKBs": {
+            "Type": "Map",
+            "ItemsPath": "$.skippedKBs",
+            "ItemSelector": {
+              "InstanceId.$": "$.InstanceId",
+              "KB.$": "$$.Map.Item.Value.KB",
+              "Status.$": "$$.Map.Item.Value.status"
+            },
+            "Iterator": {
+              "StartAt": "UpdateSkippedStatus",
+              "States": {
+                "UpdateSkippedStatus": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:lambda:<region>:<account-id>:function:updatePatchStatusLambda",
+                  "Parameters": {
+                    "InstanceId.$": "$.InstanceId",
+                    "KB.$": "$.KB",
+                    "Status.$": "$.Status"
+                  },
+                  "End": true
+                }
+              }
+            },
+            "ResultPath": null,
+            "Next": "MarkInstalledKBs"
+          },
+          "MarkInstalledKBs": {
+            "Type": "Map",
+            "ItemsPath": "$.installedKBs",
+            "ItemSelector": {
+              "InstanceId.$": "$.InstanceId",
+              "KB.$": "$$.Map.Item.Value"
+            },
+            "Iterator": {
+              "StartAt": "UpdateInstalledStatus",
+              "States": {
+                "UpdateInstalledStatus": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:lambda:<region>:<account-id>:function:updatePatchStatusLambda",
+                  "Parameters": {
+                    "InstanceId.$": "$.InstanceId",
+                    "KB.$": "$.KB",
+                    "Status": "Already Installed"
+                  },
+                  "End": true
+                }
+              }
+            },
+            "ResultPath": null,
+            "Next": "MarkPending"
+          },
+          "MarkPending": {
+            "Type": "Map",
+            "ItemsPath": "$.availableKBs",
+            "ItemSelector": {
+              "InstanceId.$": "$.InstanceId",
+              "KB.$": "$$.Map.Item.Value"
+            },
+            "Iterator": {
+              "StartAt": "UpdatePending",
+              "States": {
+                "UpdatePending": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:lambda:<region>:<account-id>:function:updatePatchStatusLambda",
+                  "Parameters": {
+                    "InstanceId.$": "$.InstanceId",
+                    "KB.$": "$.KB",
+                    "Status": "Pending"
+                  },
+                  "End": true
+                }
+              }
+            },
+            "ResultPath": null,
+            "Next": "PatchSequentialKBs"
+          },
+          "PatchSequentialKBs": {
+            "Type": "Map",
+            "ItemsPath": "$.availableKBs",
+            "MaxConcurrency": 1,
+            "ItemSelector": {
+              "InstanceId.$": "$.InstanceId",
+              "KB.$": "$$.Map.Item.Value"
+            },
+            "Iterator": {
+              "StartAt": "MarkInProgress",
+              "States": {
+                "MarkInProgress": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:lambda:<region>:<account-id>:function:updatePatchStatusLambda",
+                  "Parameters": {
+                    "InstanceId.$": "$.InstanceId",
+                    "KB.$": "$.KB",
+                    "Status": "InProgress"
+                  },
+                  "ResultPath": null,
+                  "Next": "RunPatch"
+                },
+                "RunPatch": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:lambda:<region>:<account-id>:function:runPatchLambda",
+                  "Retry": [
+                    {
+                      "ErrorEquals": [
+                        "States.ALL"
+                      ],
+                      "IntervalSeconds": 10,
+                      "MaxAttempts": 2,
+                      "BackoffRate": 2
+                    }
+                  ],
+                  "ResultPath": "$.RunPatchResult",
+                  "Next": "PollPatchStatus"
+                },
+                "PollPatchStatus": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:lambda:<region>:<account-id>:function:pollCommandStatusLambda",
+                  "Parameters": {
+                    "CommandId.$": "$.RunPatchResult.CommandId",
+                    "InstanceId.$": "$.InstanceId"
+                  },
+                  "ResultPath": "$.PollResult",
+                  "Next": "CheckPatchStatus"
+                },
+                "CheckPatchStatus": {
+                  "Type": "Choice",
+                  "Choices": [
+                    {
+                      "Variable": "$.PollResult.Status",
+                      "StringEquals": "InProgress",
+                      "Next": "Wait30s"
+                    },
+                    {
+                      "Variable": "$.PollResult.Status",
+                      "StringEquals": "Success",
+                      "Next": "MarkSuccess"
+                    },
+                    {
+                      "Variable": "$.PollResult.Status",
+                      "StringEquals": "Failed",
+                      "Next": "MarkFailed"
+                    }
+                  ],
+                  "Default": "Wait30s"
+                },
+                "Wait30s": {
+                  "Type": "Wait",
+                  "Seconds": 30,
+                  "Next": "PollPatchStatus"
+                },
+                "MarkSuccess": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:lambda:<region>:<account-id>:function:updatePatchStatusLambda",
+                  "Parameters": {
+                    "InstanceId.$": "$.InstanceId",
+                    "KB.$": "$.KB",
+                    "Status": "Success",
+                    "RebootRequired.$": "$.PollResult.RebootRequired"
+                  },
+                  "Next": "Done"
+                },
+                "MarkFailed": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:lambda:<region>:<account-id>:function:updatePatchStatusLambda",
+                  "Parameters": {
+                    "InstanceId.$": "$.InstanceId",
+                    "KB.$": "$.KB",
+                    "Status": "Failed"
+                  },
+                  "Next": "Done"
+                },
+                "Done": {
+                  "Type": "Pass",
+                  "End": true
+                }
+              }
+            },
+            "End": true
+          }
+        }
+      },
+      "ResultPath": "$.overview",
+      "Next": "SendSummaryEmail"
+    },
+    "SendSummaryEmail": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:<region>:<account-id>:function:summarizeLambda",
+      "Parameters": {
+        "summary.$": "$"
+      },
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "IgnoreEmailError"
+        }
+      ],
+      "End": true
+    },
+    "IgnoreEmailError": {
+      "Type": "Pass",
+      "End": true
+    }
+  }
+}

@@ -1,0 +1,133 @@
+{
+  "Comment": "Retry patch for a single KB on one instance with email notification",
+  "StartAt": "MarkInProgress",
+  "States": {
+    "MarkInProgress": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:<region>:<account-id>:function:updatePatchStatusLambda",
+      "Parameters": {
+        "InstanceId.$": "$.InstanceId",
+        "KB.$": "$.KB",
+        "Status": "InProgress"
+      },
+      "Next": "RunPatch"
+    },
+    "RunPatch": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:<region>:<account-id>:function:runPatchLambda",
+      "ResultPath": "$.RunPatchResult",
+      "Next": "PollPatchStatus"
+    },
+    "PollPatchStatus": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:<region>:<account-id>:function:pollCommandStatusLambda",
+      "Parameters": {
+        "CommandId.$": "$.RunPatchResult.CommandId",
+        "InstanceId.$": "$.InstanceId"
+      },
+      "ResultPath": "$.PollResult",
+      "Next": "CheckPatchStatus"
+    },
+    "CheckPatchStatus": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.PollResult.Status",
+          "StringEquals": "InProgress",
+          "Next": "Wait30s"
+        },
+        {
+          "Variable": "$.PollResult.Status",
+          "StringEquals": "Success",
+          "Next": "MarkSuccess"
+        },
+        {
+          "Variable": "$.PollResult.Status",
+          "StringEquals": "Failed",
+          "Next": "MarkFailed"
+        }
+      ],
+      "Default": "Wait30s"
+    },
+    "Wait30s": {
+      "Type": "Wait",
+      "Seconds": 30,
+      "Next": "PollPatchStatus"
+    },
+    "MarkSuccess": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:<region>:<account-id>:function:updatePatchStatusLambda",
+      "Parameters": {
+        "InstanceId.$": "$.InstanceId",
+        "KB.$": "$.KB",
+        "Status": "Success",
+        "RebootRequired.$": "$.PollResult.RebootRequired"
+      },
+      "Next": "SendSuccessNotification"
+    },
+    "MarkFailed": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:<region>:<account-id>:function:updatePatchStatusLambda",
+      "Parameters": {
+        "InstanceId.$": "$.InstanceId",
+        "KB.$": "$.KB",
+        "Status": "Failed"
+      },
+      "Next": "SendFailureNotification"
+    },
+    "SendSuccessNotification": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:<region>:<account-id>:function:summarizeLambda",
+      "Parameters": {
+        "summary": {
+          "status": "done",
+          "results": [
+            {
+              "InstanceId.$": "$.InstanceId",
+              "installedKBs": [],
+              "availableKBs": [],
+              "skippedKBs": []
+            }
+          ],
+          "overview": [
+            [
+              {
+                "InstanceId.$": "$.InstanceId",
+                "KB.$": "$.KB",
+                "newStatus": "Success"
+              }
+            ]
+          ]
+        }
+      },
+      "End": true
+    },
+    "SendFailureNotification": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:<region>:<account-id>:function:summarizeLambda",
+      "Parameters": {
+        "summary": {
+          "status": "done",
+          "results": [
+            {
+              "InstanceId.$": "$.InstanceId",
+              "installedKBs": [],
+              "availableKBs": [],
+              "skippedKBs": []
+            }
+          ],
+          "overview": [
+            [
+              {
+                "InstanceId.$": "$.InstanceId",
+                "KB.$": "$.KB",
+                "newStatus": "Failed"
+              }
+            ]
+          ]
+        }
+      },
+      "End": true
+    }
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "DynamoDB table for storing patch progress per EC2 instance",
+
+  "Resources": {
+    "PatchProgressTable": {
+      "Type": "AWS::DynamoDB::Table",
+      "Properties": {
+        "TableName": "PatchProgress",
+        "BillingMode": "PAY_PER_REQUEST",
+        "AttributeDefinitions": [
+          {
+            "AttributeName": "PK",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "SK",
+            "AttributeType": "S"
+          }
+        ],
+        "KeySchema": [
+          {
+            "AttributeName": "PK",
+            "KeyType": "HASH"
+          },
+          {
+            "AttributeName": "SK",
+            "KeyType": "RANGE"
+          }
+        ],
+        "TimeToLiveSpecification": {
+          "AttributeName": "TTL",
+          "Enabled": true
+        }
+      }
+    }
+  },
+
+  "Outputs": {
+    "PatchProgressTableName": {
+      "Description": "Name of the PatchProgress table",
+      "Value": {
+        "Ref": "PatchProgressTable"
+      },
+      "Export": {
+        "Name": "PatchProgressTableName"
+      }
+    },
+    "PatchProgressTableArn": {
+      "Description": "ARN of the PatchProgress table",
+      "Value": {
+        "Fn::GetAtt": ["PatchProgressTable", "Arn"]
+      },
+      "Export": {
+        "Name": "PatchProgressTableArn"
+      }
+    }
+  }
+}

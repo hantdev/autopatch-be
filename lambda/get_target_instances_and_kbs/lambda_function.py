@@ -1,6 +1,5 @@
 import boto3
 import os
-import json
 import logging
 from botocore.exceptions import ClientError
 from boto3.dynamodb.conditions import Key
@@ -9,41 +8,79 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 dynamodb = boto3.resource('dynamodb')
+smm = boto3.client('ssm')
 ec2 = boto3.client('ec2')
 
-DDB_TABLE_NAME = os.environ['TABLE_NAME']
-table = dynamodb.Table(DDB_TABLE_NAME)
+DDB_TABLE_NAME = os.environ.get("TABLE_NAME")
 
 def lambda_handler(event, context):
-    logger.info("Started getTargetInstancesAndKBsLambda with event: %s", json.dumps(event))
-
-    instance_ids = event.get('instance_ids', [])
-    if not instance_ids or not isinstance(instance_ids, list):
-        return {
-            "status": "Failed",
-            "message": "Missing or invalid 'instance_ids' input"
-        }
+    instance_ids = event.get("instance_ids", [])
+    if not instance_ids:
+        return {"status": "error", "message": "Missing instance_ids"}
 
     results = []
 
     for instance_id in instance_ids:
-        os_name = get_os_from_instance(instance_id)
-        if not os_name:
-            logger.warning(f"Could not determine OS for instance {instance_id}")
-            continue
+        try:
+            os_product = get_os_from_instance(instance_id)
+            if not os_product:
+                results.append({
+                    "instance_id": instance_id,
+                    "error": f"OS not found in tags for {instance_id}"
+                })
+                continue
 
-        os_key = f"OS#{os_name}"
-        kb_list = get_kbs_from_dynamodb(os_key)
-        kb_list = list(set(kb_list))  # Remove duplicates
+            table = dynamodb.Table(DDB_TABLE_NAME)
+            response = table.query(
+                KeyConditionExpression=Key('PK').eq(f"OS#{os_product}")
+            )
+            kb_list = list(set([item["kbArticle"] for item in response.get("Items", [])]))
 
-        results.append({
-            "InstanceId": instance_id,
-            "OS": os_name,
-            "KBs": kb_list
-        })
+            logger.info(f"[{instance_id}] Found {len(kb_list)} KBs from DynamoDB")
+
+            # PowerShell script chuẩn hóa output
+            script = """
+if (-not (Get-Module -ListAvailable -Name PSWindowsUpdate)) {
+    Install-PackageProvider -Name NuGet -Force -Scope CurrentUser
+    Set-PSRepository -Name 'PSGallery' -InstallationPolicy Trusted
+    Install-Module -Name PSWindowsUpdate -Force -AllowClobber -Scope CurrentUser
+}
+Import-Module PSWindowsUpdate
+
+$installed = Get-HotFix | Select-Object -ExpandProperty HotFixID
+$available = Get-WindowsUpdate -MicrosoftUpdate -AcceptAll -IgnoreReboot | ForEach-Object {
+    $_.KBArticleIDs | ForEach-Object { 'KB' + $_ }
+}
+
+Write-Output "INSTALLED_KBS=$($installed -join ',')"
+Write-Output "AVAILABLE_KBS=$($available -join ',')"
+"""
+
+            ssm_response = smm.send_command(
+                InstanceIds=[instance_id],
+                DocumentName="AWS-RunPowerShellScript",
+                Parameters={'commands': [script]},
+                TimeoutSeconds=180
+            )
+
+            command_id = ssm_response["Command"]["CommandId"]
+
+            results.append({
+                "status": "sent",
+                "instance_id": instance_id,
+                "command_id": command_id,
+                "kb_list": kb_list
+            })
+
+        except Exception as e:
+            logger.error(f"[{instance_id}] Error: {e}")
+            results.append({
+                "instance_id": instance_id,
+                "error": str(e)
+            })
 
     return {
-        "status": "Success",
+        "status": "done",
         "results": results
     }
 
@@ -58,14 +95,3 @@ def get_os_from_instance(instance_id):
     except ClientError as e:
         logger.error(f"EC2 describe_instances error: {e}")
         return None
-
-def get_kbs_from_dynamodb(os_key):
-    try:
-        response = table.query(
-            KeyConditionExpression=Key('PK').eq(os_key)
-        )
-        items = response.get('Items', [])
-        return [item['kbArticle'] for item in items if 'kbArticle' in item]
-    except ClientError as e:
-        logger.error(f"DynamoDB query error: {e}")
-        return []
