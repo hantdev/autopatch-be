@@ -8,15 +8,15 @@ https://xioac2avy5.execute-api.us-east-1.amazonaws.com/prod
 
 ### 📍 Endpoints Overview
 
-| Endpoint                     | Method | Description                                        |
-|------------------------------|--------|----------------------------------------------------|
-| `/fetch-os-info`            | POST   | Retrieve the OS name from EC2 instance tags        |
-| `/parse-cve`                | POST   | Parse installed/available KBs from SSM result      |
-| `/start-patch`              | POST   | Trigger Step Function to patch all required KBs    |
-| `/get-patch-status`         | POST   | Get patch status summary from DynamoDB             |
-| `/update-cve`               | POST   | Fetch CVEs from MSRC API and update DynamoDB       |
-| `/reboot-server`            | POST   | Reboot target EC2 instances                        |
-| `/start-patch-single-kb`    | POST   | Patch a specific KB on a single EC2 instance       |
+| Endpoint                 | Method | Description                                     | Lambda Function         |
+| ------------------------ | ------ | ----------------------------------------------- | ----------------------- |
+| `/fetch-os-info`         | POST   | Retrieve the OS name from EC2 instance tags     | `fetch_os_info`         |
+| `/parse-cve`             | POST   | Parse installed/available KBs from SSM result   | `parse_cve`             |
+| `/start-patch`           | POST   | Trigger Step Function to patch all required KBs | `start_patch`           |
+| `/get-patch-status`      | POST   | Get patch status summary from DynamoDB          | `get_patch_status`      |
+| `/update-cve`            | POST   | Fetch CVEs from MSRC API and update DynamoDB    | `update_full_cve_data`  |
+| `/reboot-server`         | POST   | Reboot target EC2 instances                     | `reboot_EC2`            |
+| `/start-patch-single-kb` | POST   | Patch a specific KB on a single EC2 instance    | `start_patch_single_KB` |
 
 > All endpoints accept JSON payloads and return standard HTTP JSON responses.
 
